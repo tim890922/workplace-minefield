@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#111827" />
-  <meta name="description" content="同事聚會小酌用的單機派對遊戲：8 個打卡鐘，其中 1 個是主管的陷阱，點到的人乾杯！" />
+  <meta name="description" content="同事聚會小酌用的單機派對遊戲：一排打卡鐘裡藏著 1 個主管陷阱，點到的人乾杯！" />
   <title>職災地雷區</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%8F%B0%3C/text%3E%3C/svg%3E" />
 
@@ -119,6 +119,8 @@
       font-size: 1.1em;
     }
     .icon-fallback.icon-lg { font-size: 2.6rem; }
+    .icon-fallback.icon-md { font-size: 2.1rem; }
+    .icon-fallback.icon-sm { font-size: 1.6rem; }
 
     @media (prefers-reduced-motion: reduce) {
       .float-y, .pop, .alarm, .shake, .attention { animation: none; }
@@ -136,7 +138,29 @@
           <span data-icon="siren" data-icon-class="h-7 w-7 text-red-500"></span>
           職災地雷區
         </h1>
-        <p class="mt-2 text-sm text-gray-400">8 個打卡鐘，1 個是主管的陷阱</p>
+        <!-- 打卡鐘數量設定 -->
+        <div class="mt-2 flex items-center gap-2 text-sm text-gray-400">
+          <div class="flex shrink-0 items-center rounded-lg border border-gray-700 bg-gray-800" role="group" aria-label="打卡鐘數量">
+            <button
+              id="count-dec"
+              type="button"
+              aria-label="減少打卡鐘"
+              class="flex h-8 w-8 items-center justify-center rounded-l-lg text-gray-300 transition enabled:hover:text-white enabled:active:scale-90 disabled:opacity-30"
+            >
+              <span data-icon="minus" data-icon-class="h-4 w-4"></span>
+            </button>
+            <span id="count-value" class="w-7 text-center text-base font-black tabular-nums text-amber-300"></span>
+            <button
+              id="count-inc"
+              type="button"
+              aria-label="增加打卡鐘"
+              class="flex h-8 w-8 items-center justify-center rounded-r-lg text-gray-300 transition enabled:hover:text-white enabled:active:scale-90 disabled:opacity-30"
+            >
+              <span data-icon="plus" data-icon-class="h-4 w-4"></span>
+            </button>
+          </div>
+          <span>個打卡鐘，1 個是地雷</span>
+        </div>
       </div>
       <button
         id="sound-toggle"
@@ -159,8 +183,8 @@
       </div>
     </section>
 
-    <!-- 8 個打卡鐘（2 x 4），由 JS 產生 -->
-    <main id="board" class="grid min-h-0 flex-1 grid-cols-2 grid-rows-4 gap-3" aria-label="打卡鐘"></main>
+    <!-- 打卡鐘，由 JS 依數量產生並決定排版 -->
+    <main id="board" class="grid min-h-0 flex-1" aria-label="打卡鐘"></main>
 
     <!-- 重新開始 -->
     <footer class="flex flex-col gap-2">
@@ -186,8 +210,11 @@
       /* =========================================================
        * 設定
        * ========================================================= */
-      const TOTAL_CLOCKS = 8;
+      const MIN_CLOCKS = 3;
+      const MAX_CLOCKS = 20;
+      const DEFAULT_CLOCKS = 8;
       const SOUND_PREF_KEY = 'workplace-minefield:sound';
+      const COUNT_PREF_KEY = 'workplace-minefield:count';
 
       const SAFE_LINES = [
         '呼～安全下班！',
@@ -210,6 +237,9 @@
         statusSub: $('status-sub'),
         restartBtn: $('restart-btn'),
         soundBtn: $('sound-toggle'),
+        countDec: $('count-dec'),
+        countInc: $('count-inc'),
+        countValue: $('count-value'),
         flash: $('flash'),
       };
 
@@ -217,6 +247,8 @@
        * 遊戲狀態
        * ========================================================= */
       const game = {
+        total: DEFAULT_CLOCKS, // 打卡鐘數量（初始化時從 localStorage 讀回）
+        density: 'lg',         // 依數量決定的按鈕尺寸等級
         bombIndex: -1, // 地雷位置只存在記憶體，不寫進 DOM
         picked: 0,     // 這一輪已經點了幾個
         over: false,
@@ -226,14 +258,36 @@
       /* =========================================================
        * 小工具
        * ========================================================= */
+      // 0 ~ max-1 的均勻亂數（用拒絕取樣避免取餘數造成的偏差）
       function randomInt(max) {
         if (window.crypto && crypto.getRandomValues) {
           const buf = new Uint32Array(1);
-          crypto.getRandomValues(buf);
+          const limit = Math.floor(0x100000000 / max) * max;
+          do {
+            crypto.getRandomValues(buf);
+          } while (buf[0] >= limit);
           return buf[0] % max;
         }
         return Math.floor(Math.random() * max);
       }
+
+      // localStorage 包一層：無痕模式或被封鎖時不會報錯
+      const store = {
+        get(key) {
+          try {
+            return localStorage.getItem(key);
+          } catch {
+            return null;
+          }
+        },
+        set(key, value) {
+          try {
+            localStorage.setItem(key, value);
+          } catch {
+            /* 存不了就算了 */
+          }
+        },
+      };
 
       const pickOne = (list) => list[randomInt(list.length)];
 
@@ -265,15 +319,17 @@
         'rotate-ccw': '🔄',
         'volume-2': '🔊',
         'volume-x': '🔇',
+        minus: '➖',
+        plus: '➕',
       };
 
       const toPascalCase = (name) => name.replace(/(^|-)(\w)/g, (_, __, ch) => ch.toUpperCase());
 
-      function iconHTML(name, className = '', large = false) {
+      // fallbackSize：Lucide 不在時 emoji 的大小（icon-lg / icon-md / icon-sm）
+      function iconHTML(name, className = '', fallbackSize = '') {
         const node = window.lucide && lucide.icons && lucide.icons[toPascalCase(name)];
         if (!node) {
-          const sizeClass = large ? 'icon-lg' : '';
-          return `<span class="icon-fallback ${sizeClass} ${className}" aria-hidden="true">${ICON_FALLBACK[name] || '•'}</span>`;
+          return `<span class="icon-fallback ${fallbackSize} ${className}" aria-hidden="true">${ICON_FALLBACK[name] || '•'}</span>`;
         }
         const svg = lucide.createElement(node);
         svg.setAttribute('class', `lucide lucide-${name} ${className}`);
@@ -293,23 +349,7 @@
        * ========================================================= */
       const sound = (() => {
         let ctx = null;
-        let enabled = readPref();
-
-        function readPref() {
-          try {
-            return localStorage.getItem(SOUND_PREF_KEY) !== 'off';
-          } catch {
-            return true;
-          }
-        }
-
-        function savePref(on) {
-          try {
-            localStorage.setItem(SOUND_PREF_KEY, on ? 'on' : 'off');
-          } catch {
-            /* 無痕模式等情況存不了就算了 */
-          }
-        }
+        let enabled = store.get(SOUND_PREF_KEY) !== 'off';
 
         // 手機瀏覽器要求在使用者點擊時才能啟動 AudioContext
         function getContext() {
@@ -380,7 +420,7 @@
           },
           set enabled(on) {
             enabled = on;
-            savePref(on);
+            store.set(SOUND_PREF_KEY, on ? 'on' : 'off');
           },
         };
       })();
@@ -439,8 +479,34 @@
        * 畫面：打卡鐘按鈕
        * ========================================================= */
       const CLOCK_BASE =
-        'relative flex flex-col items-center justify-center gap-1.5 overflow-hidden rounded-2xl border p-2 text-center ' +
+        'relative flex flex-col items-center justify-center overflow-hidden border text-center ' +
         'transition-transform duration-150 ease-out focus:outline-none focus-visible:ring-4 focus-visible:ring-amber-300/70';
+
+      // 依打卡鐘數量切換尺寸：越多顆、按鈕越小，地雷文字也跟著縮短
+      const DENSITY = {
+        lg: {
+          gridGap: '0.75rem', box: 'gap-1.5 rounded-2xl p-2', stack: 'gap-1.5',
+          icon: 'h-12 w-12', fallback: 'icon-lg', label: 'text-sm', safeLabel: 'text-base',
+          bombLabel: 'text-sm', bombText: '主管叫你進辦公室！<br />乾杯！', badge: 'text-2xl',
+        },
+        md: {
+          gridGap: '0.625rem', box: 'gap-1 rounded-2xl p-1.5', stack: 'gap-1',
+          icon: 'h-10 w-10', fallback: 'icon-md', label: 'text-xs', safeLabel: 'text-sm',
+          bombLabel: 'text-xs', bombText: '進辦公室！<br />乾杯！', badge: 'text-xl',
+        },
+        sm: {
+          gridGap: '0.5rem', box: 'gap-0.5 rounded-xl p-1', stack: 'gap-0.5',
+          icon: 'h-8 w-8', fallback: 'icon-sm', label: 'text-[11px]', safeLabel: 'text-xs',
+          bombLabel: 'text-xs', bombText: '乾杯！', badge: 'text-base',
+        },
+      };
+
+      // 欄數：≤ 8 顆兩欄、≤ 12 顆三欄、其餘四欄
+      function layoutFor(total) {
+        const cols = total <= 8 ? 2 : total <= 12 ? 3 : 4;
+        const density = { 2: 'lg', 3: 'md', 4: 'sm' }[cols];
+        return { cols, rows: Math.ceil(total / cols), density };
+      }
 
       const CLOCK_LOOKS = {
         idle:
@@ -452,28 +518,29 @@
       };
 
       function clockInnerHTML(look, index) {
+        const d = DENSITY[game.density];
         switch (look) {
           case 'idle':
             // 每顆的浮動節奏錯開，看起來比較自然
             return `
-              <span class="float-y flex flex-col items-center gap-1.5" style="animation-delay:${(-index * 0.35).toFixed(2)}s">
-                ${iconHTML('alarm-clock', 'h-12 w-12 text-amber-300 drop-shadow-[0_2px_8px_rgba(251,191,36,0.35)]', true)}
-                <span class="pl-[0.35em] text-sm font-bold tracking-[0.35em] text-gray-300">打卡</span>
+              <span class="float-y flex flex-col items-center ${d.stack}" style="animation-delay:${(-index * 0.35).toFixed(2)}s">
+                ${iconHTML('alarm-clock', `${d.icon} text-amber-300 drop-shadow-[0_2px_8px_rgba(251,191,36,0.35)]`, d.fallback)}
+                <span class="pl-[0.35em] ${d.label} font-bold tracking-[0.35em] text-gray-300">打卡</span>
               </span>`;
           case 'safe':
             return `
-              ${iconHTML('coffee', 'h-11 w-11', true)}
-              <span class="text-base font-black tracking-wider">安全下班</span>`;
+              ${iconHTML('coffee', d.icon, d.fallback)}
+              <span class="${d.safeLabel} font-black tracking-wider">安全下班</span>`;
           case 'bomb':
             return `
-              <span class="absolute right-2 top-1.5 text-2xl" aria-hidden="true">💥</span>
-              ${iconHTML('angry', 'h-11 w-11', true)}
-              <span class="text-sm font-black leading-tight">主管叫你進辦公室！<br />乾杯！</span>`;
+              <span class="absolute right-1.5 top-1 ${d.badge}" aria-hidden="true">💥</span>
+              ${iconHTML('angry', d.icon, d.fallback)}
+              <span class="${d.bombLabel} font-black leading-tight">${d.bombText}</span>`;
           case 'dead':
           default:
             return `
-              ${iconHTML('alarm-clock', 'h-10 w-10', true)}
-              <span class="pl-[0.35em] text-sm font-bold tracking-[0.35em]">打卡</span>`;
+              ${iconHTML('alarm-clock', d.icon, d.fallback)}
+              <span class="pl-[0.35em] ${d.label} font-bold tracking-[0.35em]">打卡</span>`;
         }
       }
 
@@ -487,22 +554,60 @@
       function paintClock(index, look) {
         const btn = game.buttons[index];
         btn.dataset.state = look;
-        btn.className = `${CLOCK_BASE} ${CLOCK_LOOKS[look]}`;
+        btn.className = `${CLOCK_BASE} ${DENSITY[game.density].box} ${CLOCK_LOOKS[look]}`;
         btn.innerHTML = clockInnerHTML(look, index);
         btn.disabled = look !== 'idle';
         btn.setAttribute('aria-label', CLOCK_LABELS[look](index + 1));
       }
 
+      /**
+       * 依目前數量重建棋盤。
+       * 格線用「兩倍欄數、每顆跨兩格」，最後一排不滿時往右偏移半格的倍數就能置中。
+       */
       function buildBoard() {
-        const fragment = document.createDocumentFragment();
-        game.buttons = Array.from({ length: TOTAL_CLOCKS }, (_, index) => {
+        const { cols, rows, density } = layoutFor(game.total);
+        game.density = density;
+
+        els.board.style.gridTemplateColumns = `repeat(${cols * 2}, minmax(0, 1fr))`;
+        els.board.style.gridTemplateRows = `repeat(${rows}, minmax(0, 1fr))`;
+        els.board.style.gap = DENSITY[density].gridGap;
+
+        const lastRowFirst = (rows - 1) * cols;
+        const lastRowMissing = cols - (game.total - lastRowFirst); // 最後一排少了幾顆
+
+        game.buttons = Array.from({ length: game.total }, (_, index) => {
           const btn = document.createElement('button');
           btn.type = 'button';
+          btn.style.gridColumn =
+            index === lastRowFirst && lastRowMissing > 0 ? `${lastRowMissing + 1} / span 2` : 'span 2';
           btn.addEventListener('click', () => handlePick(index));
-          fragment.appendChild(btn);
           return btn;
         });
-        els.board.appendChild(fragment);
+        els.board.replaceChildren(...game.buttons);
+      }
+
+      /* =========================================================
+       * 畫面：數量設定
+       * ========================================================= */
+      function renderCountControls() {
+        const locked = game.picked > 0 && !game.over; // 回合進行中鎖住，避免誤觸洗掉進度
+        els.countValue.textContent = game.total;
+        els.countDec.disabled = locked || game.total <= MIN_CLOCKS;
+        els.countInc.disabled = locked || game.total >= MAX_CLOCKS;
+      }
+
+      function loadClockCount() {
+        const saved = Number.parseInt(store.get(COUNT_PREF_KEY), 10);
+        return saved >= MIN_CLOCKS && saved <= MAX_CLOCKS ? saved : DEFAULT_CLOCKS;
+      }
+
+      function setClockCount(total) {
+        const next = Math.min(MAX_CLOCKS, Math.max(MIN_CLOCKS, total));
+        if (next === game.total) return;
+        game.total = next;
+        store.set(COUNT_PREF_KEY, String(next));
+        buildBoard();
+        newGame({ animate: true });
       }
 
       /* =========================================================
@@ -520,7 +625,7 @@
        * 遊戲流程
        * ========================================================= */
       function newGame({ animate = false } = {}) {
-        game.bombIndex = randomInt(TOTAL_CLOCKS);
+        game.bombIndex = randomInt(game.total);
         game.picked = 0;
         game.over = false;
 
@@ -529,8 +634,9 @@
           if (animate) replayAnimation(btn, 'pop');
         });
 
-        setStatus('idle', '請選擇一個打卡鐘...', `輪流點一個，中獎機率 ${formatOdds(TOTAL_CLOCKS)}`);
+        setStatus('idle', '請選擇一個打卡鐘...', `輪流點一個，中獎機率 ${formatOdds(game.total)}`);
         els.restartBtn.classList.remove('attention');
+        renderCountControls();
       }
 
       function handlePick(index) {
@@ -546,13 +652,14 @@
         } else {
           revealSafe(index);
         }
+        renderCountControls();
       }
 
       function revealSafe(index) {
         paintClock(index, 'safe');
         sound.ding();
 
-        const remaining = TOTAL_CLOCKS - game.picked;
+        const remaining = game.total - game.picked;
         if (remaining === 1) {
           setStatus('warn', '只剩最後一個打卡鐘了……', '下一位中獎機率 100%，認命乾杯吧 🍺');
         } else {
@@ -592,11 +699,15 @@
         if (sound.enabled) sound.ding(); // 打開時試聽一下
       });
 
+      els.countDec.addEventListener('click', () => setClockCount(game.total - 1));
+      els.countInc.addEventListener('click', () => setClockCount(game.total + 1));
+
       // 切回前景時，重新要求螢幕常亮（切到背景時系統會自動釋放）
       document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible' && game.picked > 0) keepScreenAwake();
       });
 
+      game.total = loadClockCount();
       mountStaticIcons();
       renderSoundToggle();
       buildBoard();
