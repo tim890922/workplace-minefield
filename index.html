@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#111827" />
+  <meta name="description" content="同事聚會小酌用的單機派對遊戲：8 個打卡鐘，其中 1 個是主管的陷阱，點到的人乾杯！" />
+  <title>職災地雷區</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%8F%B0%3C/text%3E%3C/svg%3E" />
+
+  <!-- Tailwind CSS v3（Play CDN） -->
+  <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+  <!-- Lucide Icons（UMD 版，提供 window.lucide） -->
+  <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+
+  <style>
+    html,
+    body {
+      background-color: #111827; /* 與 bg-gray-900 相同，CDN 還沒載入前也不會白屏 */
+    }
+
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+      -webkit-tap-highlight-color: transparent;
+      -webkit-user-select: none;
+      user-select: none;
+      touch-action: manipulation; /* 避免連點時觸發雙擊縮放 */
+      overscroll-behavior: none;
+    }
+
+    /* 版面剛好吃滿一個螢幕高度；螢幕太矮時改為可捲動 */
+    .app-shell {
+      height: 100vh;
+      height: 100dvh;
+      min-height: 560px;
+      padding:
+        max(16px, env(safe-area-inset-top))
+        max(16px, env(safe-area-inset-right))
+        max(16px, env(safe-area-inset-bottom))
+        max(16px, env(safe-area-inset-left));
+    }
+
+    /* ---------- 打卡鐘各狀態的陰影 ---------- */
+    .shadow-idle {
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.14),
+        inset 0 -3px 0 rgba(0, 0, 0, 0.25),
+        0 10px 20px -6px rgba(0, 0, 0, 0.6);
+    }
+    .shadow-safe {
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.25),
+        0 0 24px rgba(16, 185, 129, 0.45);
+    }
+    .shadow-bomb {
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.25),
+        0 0 36px rgba(239, 68, 68, 0.75);
+    }
+
+    /* ---------- 動畫 ---------- */
+    /* 打卡鐘微浮動 */
+    @keyframes float-y {
+      0%, 100% { transform: translateY(0); }
+      50%      { transform: translateY(-5px); }
+    }
+    .float-y { animation: float-y 2.8s ease-in-out infinite; }
+
+    /* 翻開時彈一下 */
+    @keyframes pop {
+      0%   { transform: scale(0.88); }
+      55%  { transform: scale(1.07); }
+      100% { transform: scale(1); }
+    }
+    .pop { animation: pop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1); }
+
+    /* 地雷按鈕警報閃爍 */
+    @keyframes alarm {
+      0%, 100% { transform: scale(1);    filter: brightness(1); }
+      50%      { transform: scale(1.04); filter: brightness(1.3); }
+    }
+    .alarm { animation: alarm 0.5s ease-in-out 6; }
+
+    /* 整個畫面震動 */
+    @keyframes shake {
+      0%, 100% { transform: translate(0, 0); }
+      15% { transform: translate(-8px, 2px); }
+      30% { transform: translate(7px, -3px); }
+      45% { transform: translate(-6px, 3px); }
+      60% { transform: translate(5px, -2px); }
+      75% { transform: translate(-3px, 1px); }
+      90% { transform: translate(2px, 0); }
+    }
+    .shake { animation: shake 0.55s ease-in-out; }
+
+    /* 全螢幕紅光 */
+    @keyframes flash {
+      0%   { opacity: 0; }
+      15%  { opacity: 0.55; }
+      35%  { opacity: 0.1; }
+      50%  { opacity: 0.45; }
+      100% { opacity: 0; }
+    }
+    .flash { animation: flash 0.9s ease-out; }
+
+    /* 遊戲結束時，重新開始按鈕發出光圈提醒 */
+    @keyframes attention {
+      0%   { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.65); }
+      100% { box-shadow: 0 0 0 14px rgba(251, 191, 36, 0); }
+    }
+    .attention { animation: attention 1.2s ease-out infinite; }
+
+    /* Lucide 載入失敗時改用 emoji 顯示 */
+    .icon-fallback {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+      font-size: 1.1em;
+    }
+    .icon-fallback.icon-lg { font-size: 2.6rem; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .float-y, .pop, .alarm, .shake, .attention { animation: none; }
+    }
+  </style>
+</head>
+
+<body class="bg-gray-900 text-gray-100 antialiased">
+  <div id="app" class="app-shell mx-auto flex w-full max-w-md flex-col gap-4">
+
+    <!-- 標題列 -->
+    <header class="flex items-start justify-between gap-3">
+      <div class="min-w-0">
+        <h1 class="flex items-center gap-2 text-[1.75rem] font-black leading-none tracking-wide">
+          <span data-icon="siren" data-icon-class="h-7 w-7 text-red-500"></span>
+          職災地雷區
+        </h1>
+        <p class="mt-2 text-sm text-gray-400">8 個打卡鐘，1 個是主管的陷阱</p>
+      </div>
+      <button
+        id="sound-toggle"
+        type="button"
+        class="shrink-0 rounded-xl border border-gray-700 bg-gray-800 p-2.5 text-gray-300 transition hover:text-white active:scale-90"
+      ></button>
+    </header>
+
+    <!-- 狀態列 -->
+    <section
+      id="status"
+      role="status"
+      aria-live="polite"
+      class="flex min-h-[4.5rem] items-center gap-3 rounded-2xl border px-4 py-3 transition-colors duration-300"
+    >
+      <div id="status-icon" class="flex shrink-0 items-center"></div>
+      <div class="min-w-0">
+        <p id="status-title" class="text-lg font-bold leading-snug"></p>
+        <p id="status-sub" class="mt-0.5 text-sm opacity-80"></p>
+      </div>
+    </section>
+
+    <!-- 8 個打卡鐘（2 x 4），由 JS 產生 -->
+    <main id="board" class="grid min-h-0 flex-1 grid-cols-2 grid-rows-4 gap-3" aria-label="打卡鐘"></main>
+
+    <!-- 重新開始 -->
+    <footer class="flex flex-col gap-2">
+      <button
+        id="restart-btn"
+        type="button"
+        class="flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-400 px-4 py-4 text-lg font-black text-gray-900 shadow-lg shadow-black/40 transition-transform hover:bg-amber-300 active:scale-95"
+      >
+        <span data-icon="rotate-ccw" data-icon-class="h-5 w-5"></span>
+        再提一盤辭職信（重新開始）
+      </button>
+      <p class="text-center text-xs text-gray-500">飲酒過量，有害健康 · 喝酒不開車，開車不喝酒</p>
+    </footer>
+  </div>
+
+  <!-- 點到地雷時的全螢幕紅光 -->
+  <div id="flash" class="pointer-events-none fixed inset-0 bg-red-600 opacity-0" aria-hidden="true"></div>
+
+  <script>
+    (() => {
+      'use strict';
+
+      /* =========================================================
+       * 設定
+       * ========================================================= */
+      const TOTAL_CLOCKS = 8;
+      const SOUND_PREF_KEY = 'workplace-minefield:sound';
+
+      const SAFE_LINES = [
+        '呼～安全下班！',
+        '準時打卡，主管沒發現！',
+        '逃過一劫，今天不用加班！',
+        '安全上壘，換下一位！',
+        '卡打完了，人先溜了！',
+      ];
+
+      /* =========================================================
+       * DOM
+       * ========================================================= */
+      const $ = (id) => document.getElementById(id);
+      const els = {
+        app: $('app'),
+        board: $('board'),
+        status: $('status'),
+        statusIcon: $('status-icon'),
+        statusTitle: $('status-title'),
+        statusSub: $('status-sub'),
+        restartBtn: $('restart-btn'),
+        soundBtn: $('sound-toggle'),
+        flash: $('flash'),
+      };
+
+      /* =========================================================
+       * 遊戲狀態
+       * ========================================================= */
+      const game = {
+        bombIndex: -1, // 地雷位置只存在記憶體，不寫進 DOM
+        picked: 0,     // 這一輪已經點了幾個
+        over: false,
+        buttons: [],
+      };
+
+      /* =========================================================
+       * 小工具
+       * ========================================================= */
+      function randomInt(max) {
+        if (window.crypto && crypto.getRandomValues) {
+          const buf = new Uint32Array(1);
+          crypto.getRandomValues(buf);
+          return buf[0] % max;
+        }
+        return Math.floor(Math.random() * max);
+      }
+
+      const pickOne = (list) => list[randomInt(list.length)];
+
+      // 例如 n = 8 → 「1/8（12.5%）」
+      const formatOdds = (n) => `1/${n}（${Number((100 / n).toFixed(1))}%）`;
+
+      // 重播一次性的 CSS 動畫（shake、flash、pop…）
+      function replayAnimation(el, className) {
+        el.classList.remove(className);
+        void el.offsetWidth; // 強制 reflow，動畫才會重新開始
+        el.classList.add(className);
+        const onEnd = (event) => {
+          if (event.target !== el) return; // 忽略子元素冒泡上來的 animationend
+          el.classList.remove(className);
+          el.removeEventListener('animationend', onEnd);
+        };
+        el.addEventListener('animationend', onEnd);
+      }
+
+      /* =========================================================
+       * 圖示（Lucide；CDN 載不到時退回 emoji）
+       * ========================================================= */
+      const ICON_FALLBACK = {
+        'alarm-clock': '⏰',
+        coffee: '☕',
+        angry: '🤬',
+        bomb: '💣',
+        siren: '🚨',
+        'rotate-ccw': '🔄',
+        'volume-2': '🔊',
+        'volume-x': '🔇',
+      };
+
+      const toPascalCase = (name) => name.replace(/(^|-)(\w)/g, (_, __, ch) => ch.toUpperCase());
+
+      function iconHTML(name, className = '', large = false) {
+        const node = window.lucide && lucide.icons && lucide.icons[toPascalCase(name)];
+        if (!node) {
+          const sizeClass = large ? 'icon-lg' : '';
+          return `<span class="icon-fallback ${sizeClass} ${className}" aria-hidden="true">${ICON_FALLBACK[name] || '•'}</span>`;
+        }
+        const svg = lucide.createElement(node);
+        svg.setAttribute('class', `lucide lucide-${name} ${className}`);
+        svg.setAttribute('aria-hidden', 'true');
+        return svg.outerHTML;
+      }
+
+      // 把 HTML 裡的 <span data-icon="..."> 佔位換成真正的圖示
+      function mountStaticIcons() {
+        document.querySelectorAll('[data-icon]').forEach((el) => {
+          el.outerHTML = iconHTML(el.dataset.icon, el.dataset.iconClass || '');
+        });
+      }
+
+      /* =========================================================
+       * 音效（Web Audio API 即時合成，不需要任何音檔）
+       * ========================================================= */
+      const sound = (() => {
+        let ctx = null;
+        let enabled = readPref();
+
+        function readPref() {
+          try {
+            return localStorage.getItem(SOUND_PREF_KEY) !== 'off';
+          } catch {
+            return true;
+          }
+        }
+
+        function savePref(on) {
+          try {
+            localStorage.setItem(SOUND_PREF_KEY, on ? 'on' : 'off');
+          } catch {
+            /* 無痕模式等情況存不了就算了 */
+          }
+        }
+
+        // 手機瀏覽器要求在使用者點擊時才能啟動 AudioContext
+        function getContext() {
+          const AudioCtx = window.AudioContext || window.webkitAudioContext;
+          if (!AudioCtx) return null;
+          if (!ctx) ctx = new AudioCtx();
+          if (ctx.state === 'suspended') ctx.resume();
+          return ctx;
+        }
+
+        /**
+         * 播放單一音。
+         * envelope = 'pluck'：瞬間起音後快速衰減（叮）
+         * envelope = 'beep' ：維持音量再收尾（嗶）
+         */
+        function tone(ac, { freq, type = 'sine', at = 0, duration = 0.2, volume = 0.2, envelope = 'pluck' }) {
+          const t0 = ac.currentTime + at;
+          const osc = ac.createOscillator();
+          const gain = ac.createGain();
+
+          osc.type = type;
+          osc.frequency.setValueAtTime(freq, t0);
+
+          gain.gain.setValueAtTime(0.0001, t0);
+          gain.gain.exponentialRampToValueAtTime(volume, t0 + 0.008);
+          if (envelope === 'beep') gain.gain.setValueAtTime(volume, t0 + duration - 0.03);
+          gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+
+          osc.connect(gain);
+          gain.connect(ac.destination);
+          osc.start(t0);
+          osc.stop(t0 + duration + 0.05);
+        }
+
+        function play(notes) {
+          if (!enabled) return;
+          const ac = getContext();
+          if (!ac) return;
+          notes.forEach((note) => tone(ac, note));
+        }
+
+        return {
+          unlock() {
+            if (enabled) getContext();
+          },
+
+          // 叮：高音正弦波 + 泛音，清脆短促
+          ding() {
+            play([
+              { freq: 1760, duration: 0.55, volume: 0.28 },
+              { freq: 2637, duration: 0.3, volume: 0.1 },
+              { freq: 3520, duration: 0.15, volume: 0.05 },
+            ]);
+          },
+
+          // 嗶嗶嗶：低音方波 + 微失諧鋸齒波，聽起來像警報
+          alarm() {
+            play(
+              [0, 0.26, 0.52].flatMap((at) => [
+                { freq: 240, type: 'square', at, duration: 0.2, volume: 0.22, envelope: 'beep' },
+                { freq: 254, type: 'sawtooth', at, duration: 0.2, volume: 0.12, envelope: 'beep' },
+              ])
+            );
+          },
+
+          get enabled() {
+            return enabled;
+          },
+          set enabled(on) {
+            enabled = on;
+            savePref(on);
+          },
+        };
+      })();
+
+      /* =========================================================
+       * 震動 & 螢幕常亮
+       * ========================================================= */
+      function vibrate(pattern) {
+        try {
+          if (navigator.vibrate) navigator.vibrate(pattern);
+        } catch {
+          /* iOS Safari 不支援震動，忽略 */
+        }
+      }
+
+      // 手機平放在桌上玩，避免螢幕自動熄滅（支援 Screen Wake Lock 的瀏覽器才有效）
+      let wakeLock = null;
+      let wakeLockPending = false;
+      async function keepScreenAwake() {
+        if (!('wakeLock' in navigator) || wakeLock || wakeLockPending) return;
+        wakeLockPending = true;
+        try {
+          wakeLock = await navigator.wakeLock.request('screen');
+          wakeLock.addEventListener('release', () => {
+            wakeLock = null;
+          });
+        } catch {
+          /* 不支援或被拒絕就算了 */
+        } finally {
+          wakeLockPending = false;
+        }
+      }
+
+      /* =========================================================
+       * 畫面：狀態列
+       * ========================================================= */
+      const STATUS_BASE =
+        'flex min-h-[4.5rem] items-center gap-3 rounded-2xl border px-4 py-3 transition-colors duration-300';
+
+      const STATUS_TONES = {
+        idle:   { box: 'bg-gray-800/80 border-gray-700 text-gray-100',            icon: 'alarm-clock', iconClass: 'text-amber-300' },
+        safe:   { box: 'bg-emerald-950/60 border-emerald-500/60 text-emerald-50', icon: 'coffee',      iconClass: 'text-emerald-300' },
+        warn:   { box: 'bg-amber-950/60 border-amber-500/70 text-amber-50',       icon: 'bomb',        iconClass: 'text-amber-300' },
+        danger: { box: 'bg-red-950/70 border-red-500 text-red-50',                icon: 'siren',       iconClass: 'text-red-400' },
+      };
+
+      function setStatus(tone, title, sub) {
+        const t = STATUS_TONES[tone];
+        els.status.className = `${STATUS_BASE} ${t.box}`;
+        els.statusIcon.innerHTML = iconHTML(t.icon, `h-8 w-8 ${t.iconClass}`);
+        els.statusTitle.textContent = title;
+        els.statusSub.textContent = sub;
+      }
+
+      /* =========================================================
+       * 畫面：打卡鐘按鈕
+       * ========================================================= */
+      const CLOCK_BASE =
+        'relative flex flex-col items-center justify-center gap-1.5 overflow-hidden rounded-2xl border p-2 text-center ' +
+        'transition-transform duration-150 ease-out focus:outline-none focus-visible:ring-4 focus-visible:ring-amber-300/70';
+
+      const CLOCK_LOOKS = {
+        idle:
+          'cursor-pointer bg-gradient-to-b from-gray-600 to-gray-700 border-gray-500/60 text-gray-100 shadow-idle ' +
+          'enabled:hover:scale-[1.04] enabled:active:scale-95',
+        safe: 'pop bg-gradient-to-b from-emerald-500 to-emerald-700 border-emerald-300/70 text-white shadow-safe',
+        bomb: 'alarm z-10 bg-gradient-to-b from-red-500 to-red-700 border-red-300 text-white shadow-bomb',
+        dead: 'cursor-not-allowed bg-gradient-to-b from-gray-700 to-gray-800 border-gray-700 text-gray-400 opacity-40 grayscale',
+      };
+
+      function clockInnerHTML(look, index) {
+        switch (look) {
+          case 'idle':
+            // 每顆的浮動節奏錯開，看起來比較自然
+            return `
+              <span class="float-y flex flex-col items-center gap-1.5" style="animation-delay:${(-index * 0.35).toFixed(2)}s">
+                ${iconHTML('alarm-clock', 'h-12 w-12 text-amber-300 drop-shadow-[0_2px_8px_rgba(251,191,36,0.35)]', true)}
+                <span class="pl-[0.35em] text-sm font-bold tracking-[0.35em] text-gray-300">打卡</span>
+              </span>`;
+          case 'safe':
+            return `
+              ${iconHTML('coffee', 'h-11 w-11', true)}
+              <span class="text-base font-black tracking-wider">安全下班</span>`;
+          case 'bomb':
+            return `
+              <span class="absolute right-2 top-1.5 text-2xl" aria-hidden="true">💥</span>
+              ${iconHTML('angry', 'h-11 w-11', true)}
+              <span class="text-sm font-black leading-tight">主管叫你進辦公室！<br />乾杯！</span>`;
+          case 'dead':
+          default:
+            return `
+              ${iconHTML('alarm-clock', 'h-10 w-10', true)}
+              <span class="pl-[0.35em] text-sm font-bold tracking-[0.35em]">打卡</span>`;
+        }
+      }
+
+      const CLOCK_LABELS = {
+        idle: (n) => `打卡鐘 ${n}`,
+        safe: (n) => `打卡鐘 ${n}：安全下班`,
+        bomb: (n) => `打卡鐘 ${n}：主管叫你進辦公室，乾杯！`,
+        dead: (n) => `打卡鐘 ${n}：本輪已結束`,
+      };
+
+      function paintClock(index, look) {
+        const btn = game.buttons[index];
+        btn.dataset.state = look;
+        btn.className = `${CLOCK_BASE} ${CLOCK_LOOKS[look]}`;
+        btn.innerHTML = clockInnerHTML(look, index);
+        btn.disabled = look !== 'idle';
+        btn.setAttribute('aria-label', CLOCK_LABELS[look](index + 1));
+      }
+
+      function buildBoard() {
+        const fragment = document.createDocumentFragment();
+        game.buttons = Array.from({ length: TOTAL_CLOCKS }, (_, index) => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.addEventListener('click', () => handlePick(index));
+          fragment.appendChild(btn);
+          return btn;
+        });
+        els.board.appendChild(fragment);
+      }
+
+      /* =========================================================
+       * 畫面：音效開關
+       * ========================================================= */
+      function renderSoundToggle() {
+        const on = sound.enabled;
+        els.soundBtn.innerHTML = iconHTML(on ? 'volume-2' : 'volume-x', 'h-5 w-5');
+        els.soundBtn.setAttribute('aria-pressed', String(on));
+        els.soundBtn.setAttribute('aria-label', on ? '關閉音效' : '開啟音效');
+        els.soundBtn.title = on ? '音效：開' : '音效：關';
+      }
+
+      /* =========================================================
+       * 遊戲流程
+       * ========================================================= */
+      function newGame({ animate = false } = {}) {
+        game.bombIndex = randomInt(TOTAL_CLOCKS);
+        game.picked = 0;
+        game.over = false;
+
+        game.buttons.forEach((btn, index) => {
+          paintClock(index, 'idle');
+          if (animate) replayAnimation(btn, 'pop');
+        });
+
+        setStatus('idle', '請選擇一個打卡鐘...', `輪流點一個，中獎機率 ${formatOdds(TOTAL_CLOCKS)}`);
+        els.restartBtn.classList.remove('attention');
+      }
+
+      function handlePick(index) {
+        const btn = game.buttons[index];
+        if (game.over || btn.dataset.state !== 'idle') return;
+
+        sound.unlock();
+        keepScreenAwake();
+        game.picked += 1;
+
+        if (index === game.bombIndex) {
+          revealBomb(index);
+        } else {
+          revealSafe(index);
+        }
+      }
+
+      function revealSafe(index) {
+        paintClock(index, 'safe');
+        sound.ding();
+
+        const remaining = TOTAL_CLOCKS - game.picked;
+        if (remaining === 1) {
+          setStatus('warn', '只剩最後一個打卡鐘了……', '下一位中獎機率 100%，認命乾杯吧 🍺');
+        } else {
+          setStatus('safe', pickOne(SAFE_LINES), `還剩 ${remaining} 個 · 下一位中獎機率 ${formatOdds(remaining)}`);
+        }
+      }
+
+      function revealBomb(index) {
+        game.over = true;
+
+        paintClock(index, 'bomb');
+        // 其餘還沒點的打卡鐘全部失效
+        game.buttons.forEach((btn, i) => {
+          if (btn.dataset.state === 'idle') paintClock(i, 'dead');
+        });
+
+        sound.alarm();
+        vibrate([400, 120, 400, 120, 700]);
+        replayAnimation(els.app, 'shake');
+        replayAnimation(els.flash, 'flash');
+
+        setStatus('danger', '抓到了！今晚留下來加班（罰酒）！', `第 ${game.picked} 位打卡的同事中獎，乾杯！🍻`);
+        els.restartBtn.classList.add('attention');
+      }
+
+      /* =========================================================
+       * 事件綁定 & 初始化
+       * ========================================================= */
+      els.restartBtn.addEventListener('click', () => {
+        sound.unlock();
+        newGame({ animate: true });
+      });
+
+      els.soundBtn.addEventListener('click', () => {
+        sound.enabled = !sound.enabled;
+        renderSoundToggle();
+        if (sound.enabled) sound.ding(); // 打開時試聽一下
+      });
+
+      // 切回前景時，重新要求螢幕常亮（切到背景時系統會自動釋放）
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && game.picked > 0) keepScreenAwake();
+      });
+
+      mountStaticIcons();
+      renderSoundToggle();
+      buildBoard();
+      newGame();
+    })();
+  </script>
+</body>
+</html>
